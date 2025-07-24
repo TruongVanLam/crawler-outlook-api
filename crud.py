@@ -91,13 +91,10 @@ def create_auth_token(
         return db_token
 
 def get_valid_auth_token(db: Session, account_id: int):
-    """Lấy token hợp lệ cho account"""
+    """Lấy token mới nhất cho account (dù hết hạn)"""
     return db.query(AuthToken).filter(
-        and_(
-            AuthToken.account_id == account_id,
-            AuthToken.is_active == True,
-            AuthToken.expires_at > datetime.utcnow()
-        )
+        AuthToken.account_id == account_id,
+        AuthToken.is_active == True
     ).first()
 
 def update_auth_token(db: Session, token_id: int, **kwargs):

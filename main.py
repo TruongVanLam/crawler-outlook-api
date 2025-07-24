@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException, Depends
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, JSONResponse, StreamingResponse
 import requests
 import os
 import json
@@ -23,6 +23,9 @@ from crud import (
     update_auth_token
 )
 
+import io
+import pandas as pd
+
 app = FastAPI()
 
 CLIENT_ID = "b6239e39-c5f9-4704-ac0d-bcb0e0dc87b6"
@@ -34,46 +37,83 @@ GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 
 def refresh_access_token(db: Session, account_id: int):
     """Refresh access token khi hết hạn"""
-    auth_token = get_valid_auth_token(db, account_id)
-    if not auth_token:
-        raise HTTPException(status_code=401, detail="No valid token found")
-    
-    token_url = f"{AUTHORITY}/oauth2/v2.0/token"
-    data = {
-        "client_id": CLIENT_ID,
-        "scope": " ".join(SCOPE),
-        "refresh_token": auth_token.refresh_token,
-        "grant_type": "refresh_token",
-        "client_secret": CLIENT_SECRET
-    }
-    
-    response = requests.post(token_url, data=data)
-    if response.status_code != 200:
-        raise HTTPException(status_code=401, detail="Failed to refresh token")
-    
-    token_data = response.json()
-    
-    # Cập nhật token trong database
-    update_auth_token(db, auth_token.id, 
-                     access_token=token_data['access_token'],
-                     refresh_token=token_data['refresh_token'],
-                     expires_in=token_data['expires_in'],
-                     expires_at=datetime.utcnow() + timedelta(seconds=token_data['expires_in']))
-    
-    return token_data['access_token']
+    try:
+        auth_token = get_valid_auth_token(db, account_id)
+        if not auth_token:
+            raise HTTPException(status_code=401, detail="No valid token found")
+        
+        token_url = f"{AUTHORITY}/oauth2/v2.0/token"
+        data = {
+            "client_id": CLIENT_ID,
+            "scope": " ".join(SCOPE),
+            "refresh_token": auth_token.refresh_token,
+            "grant_type": "refresh_token",
+            "client_secret": CLIENT_SECRET
+        }
+        
+        response = requests.post(token_url, data=data)
+        if response.status_code != 200:
+            raise HTTPException(status_code=401, detail="Failed to refresh token")
+        
+        token_data = response.json()
+        
+        # Cập nhật token trong database
+        update_auth_token(db, auth_token.id, 
+                        access_token=token_data['access_token'],
+                        refresh_token=token_data['refresh_token'],
+                        expires_in=token_data['expires_in'],
+                        expires_at=datetime.utcnow() + timedelta(seconds=token_data['expires_in']))
+        
+        return token_data['access_token']
+    except Exception as e:
+        print(f"🔍 DEBUG: Error refreshing token: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 def get_valid_access_token(db: Session, account_id: int):
     """Lấy access token hợp lệ"""
-    auth_token = get_valid_auth_token(db, account_id)
-    
-    if not auth_token:
-        raise HTTPException(status_code=401, detail="No access token available")
-    
-    # Kiểm tra xem token có hết hạn không
-    if datetime.utcnow() >= auth_token.expires_at:
-        return refresh_access_token(db, account_id)
-    
-    return auth_token.access_token
+    try:
+        auth_token = get_valid_auth_token(db, account_id)
+
+        if not auth_token:
+            raise HTTPException(status_code=401, detail="No access token available")
+
+        # Kiểm tra xem token có hết hạn không
+        if datetime.utcnow() >= auth_token.expires_at:
+            return refresh_access_token(db, account_id)
+
+        return auth_token.access_token
+    except Exception as e:
+        print(f"🔍 DEBUG: Error getting access token: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def extract_meta_receipt_info(body_html: str) -> dict:
+    """
+    Trích xuất thông tin từ body HTML của email Meta receipt.
+    """
+    meta_info = {}
+    # Tìm các mẫu chứa thông tin cần trích xuất
+    # Ví dụ: "Account ID: 123456789" hoặc "Transaction ID: 987654321"
+    account_id_match = re.search(r"Account ID: (\d+)", body_html)
+    if account_id_match:
+        meta_info['account_id'] = account_id_match.group(1)
+
+    transaction_id_match = re.search(r"Transaction ID: (\d+)", body_html)
+    if transaction_id_match:
+        meta_info['transaction_id'] = transaction_id_match.group(1)
+
+    payment_match = re.search(r"Payment: (\d+)", body_html)
+    if payment_match:
+        meta_info['payment'] = payment_match.group(1)
+
+    card_number_match = re.search(r"Card Number: (\d+)", body_html)
+    if card_number_match:
+        meta_info['card_number'] = card_number_match.group(1)
+
+    reference_number_match = re.search(r"Reference Number: (\d+)", body_html)
+    if reference_number_match:
+        meta_info['reference_number'] = reference_number_match.group(1)
+
+    return meta_info
 
 @app.get("/login")
 def login():
@@ -251,13 +291,18 @@ def get_mail_detail(
 def sync_emails(
     account_id: int,
     top: Optional[int] = 50,
+    received_from: Optional[str] = None,  # Định dạng yyyy-mm-dd
+    received_to: Optional[str] = None,    # Định dạng yyyy-mm-dd
+    from_email: Optional[str] = None,
+    subject_startswith: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """
     Đồng bộ email từ Microsoft Graph API vào database
-    Chỉ lấy email có tiêu đề bắt đầu bằng 'Your Meta ads receipt' hoặc 'Biên lai quảng cáo Meta của bạn'
+    Cho phép filter: khoảng ngày nhận, người gửi, tiêu đề bắt đầu bằng...
+    Ngoài ra, xuất ra file Excel các trường đã trích xuất từ email Meta receipt.
     """
-    print(f"🔍 DEBUG: sync_emails called with account_id={account_id}, top={top}")
+    print(f"🔍 DEBUG: sync_emails called with account_id={account_id}, top={top}, received_from={received_from}, received_to={received_to}, from_email={from_email}, subject_startswith={subject_startswith}")
     
     try:
         print(f"🔍 DEBUG: Getting access token for account_id={account_id}")
@@ -270,13 +315,26 @@ def sync_emails(
             "Content-Type": "application/json"
         }
         
-        # Gọi Microsoft Graph API để lấy emails với filter theo tiêu đề
+        # Build filter string
+        filters = []
+        # if subject_startswith:
+        #     filters.append("startswith(subject, '{}')".format(subject_startswith.replace("'", "''")))
+        # if from_email:
+        #     filters.append("from/emailAddress/address eq '{}'".format(from_email.replace("'", "''")))
+        if received_from:
+            filters.append(f"receivedDateTime ge {received_from}T00:00:00Z")
+        if received_to:
+            filters.append(f"receivedDateTime le {received_to}T23:59:59Z")
+        filter_str = None
+        if filters:
+            filter_str = ' and '.join(filters)
+        
         params = {
             "$top": top,
-            "$orderby": "receivedDateTime desc",
             "$select": "id,subject,from,toRecipients,ccRecipients,bccRecipients,receivedDateTime,sentDateTime,isRead,hasAttachments,body,bodyPreview,importance,conversationId,conversationIndex,flag,categories,attachments",
-            # "$filter": "startswith(subject, 'Your Meta ads receipt') or startswith(subject, 'Biên lai quảng cáo Meta của bạn')"
         }
+        if filter_str:
+            params["$filter"] = filter_str
         
         response = requests.get(
             f"{GRAPH_API_BASE}/me/messages",
@@ -289,7 +347,8 @@ def sync_emails(
         
         emails_data = response.json()
         synced_count = 0
-        
+        meta_receipt_rows = []  # List chứa các dict để xuất Excel
+        print(emails_data.get("value", []))
         # Lưu từng email vào database
         for email_data in emails_data.get("value", []):
             email_id = email_data.get("id")
@@ -300,19 +359,56 @@ def sync_emails(
                 continue
             try:
                 subject = email_data.get("subject", "")
+                # Nếu không truyền subject_startswith thì chỉ lưu các mail Meta ads receipt như cũ
+                # if subject_startswith:
+                #     create_email(db, account_id, email_data)
+                #     synced_count += 1
+                #     print(f"✅ Synced email: {subject if subject else 'No subject'}")
+                # else:
                 if subject.startswith("Your Meta ads receipt") or subject.startswith("Biên lai quảng cáo Meta của bạn"):
+                    # Trích xuất thông tin từ body
+                    body_html = email_data.get('body', {}).get('content', '')
+                    meta_info = extract_meta_receipt_info(body_html)
+                    # Lấy ngày nhận mail
+                    received_date = email_data.get('receivedDateTime')
+                    meta_info['Date'] = received_date
+                    meta_receipt_rows.append({
+                        'Date': received_date,
+                        'account_id': meta_info.get('account_id'),
+                        'transaction_id': meta_info.get('transaction_id'),
+                        'payment': meta_info.get('payment'),
+                        'card_number': meta_info.get('card_number'),
+                        'reference_number': meta_info.get('reference_number')
+                    })
+                    print(f"[Meta Receipt Info] {meta_info}")
                     create_email(db, account_id, email_data)
                     synced_count += 1
                     print(f"✅ Synced email: {subject if subject else 'No subject'}")
             except Exception as e:
                 print(f"Error saving email {email_id}: {str(e)}")
                 continue
-        
+        # Nếu có dữ liệu Meta receipt, xuất ra file Excel và trả về
+        # if meta_receipt_rows:
+        #     df = pd.DataFrame(meta_receipt_rows)
+        #     # Đổi tên cột nếu cần cho đúng format mẫu
+        #     df = df[['Date', 'account_id', 'transaction_id', 'payment', 'card_number', 'reference_number']]
+        #     output = io.BytesIO()
+        #     with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        #         df.to_excel(writer, index=False, sheet_name='Meta Receipts')
+        #     output.seek(0)
+        #     return StreamingResponse(
+        #         output,
+        #         media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        #         headers={
+        #             'Content-Disposition': f'attachment; filename="meta_receipts.xlsx"'
+        #         }
+        #     )
+        # Nếu không có dữ liệu, trả về JSON như cũ
         return JSONResponse({
-            "message": f"Đồng bộ thành công {synced_count} email Meta ads receipt",
+            "message": f"Đồng bộ thành công {synced_count} email",
             "synced_count": synced_count,
             "total_fetched": len(emails_data.get("value", [])),
-            "filter": "Meta ads receipt emails only"
+            "filter": filter_str or "Meta ads receipt emails only"
         })
         
     except Exception as e:
