@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi import FastAPI, Request, HTTPException, Depends, BackgroundTasks
 from fastapi.responses import RedirectResponse, JSONResponse, StreamingResponse
 import requests
 import os
@@ -25,6 +25,7 @@ from crud import (
 
 import io
 import pandas as pd
+import re
 
 app = FastAPI()
 
@@ -293,8 +294,6 @@ def sync_emails(
     top: Optional[int] = 50,
     received_from: Optional[str] = None,  # Định dạng yyyy-mm-dd
     received_to: Optional[str] = None,    # Định dạng yyyy-mm-dd
-    from_email: Optional[str] = None,
-    subject_startswith: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """
@@ -302,7 +301,7 @@ def sync_emails(
     Cho phép filter: khoảng ngày nhận, người gửi, tiêu đề bắt đầu bằng...
     Ngoài ra, xuất ra file Excel các trường đã trích xuất từ email Meta receipt.
     """
-    print(f"🔍 DEBUG: sync_emails called with account_id={account_id}, top={top}, received_from={received_from}, received_to={received_to}, from_email={from_email}, subject_startswith={subject_startswith}")
+    print(f"🔍 DEBUG: sync_emails called with account_id={account_id}, top={top}, received_from={received_from}, received_to={received_to}")
     
     try:
         print(f"🔍 DEBUG: Getting access token for account_id={account_id}")
@@ -648,6 +647,83 @@ def get_accounts(db: Session = Depends(get_db)):
         
         return JSONResponse({"accounts": account_list, "total": len(account_list)})
         
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/mails/sync-monthly/")
+def sync_monthly_emails(
+    account_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Đồng bộ email trong 1 tháng gần nhất, chia nhỏ từng ngày để không vượt quá giới hạn 999 email/request.
+    """
+    try:
+        today = datetime.utcnow().date()
+        one_month_ago = today - timedelta(days=30)
+        total_synced = 0
+        total_days = 0
+        details = []
+        for i in range(31):
+            day_from = one_month_ago + timedelta(days=i)
+            day_to = day_from
+            if day_from > today:
+                break
+            received_from = day_from.strftime('%Y-%m-%d')
+            received_to = day_to.strftime('%Y-%m-%d')
+            access_token = get_valid_access_token(db, account_id)
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+            filters = [
+                f"receivedDateTime ge {received_from}T00:00:00Z",
+                f"receivedDateTime le {received_to}T23:59:59Z"
+            ]
+            filter_str = ' and '.join(filters)
+            params = {
+                "$top": 999,
+                "$select": "id,subject,from,toRecipients,ccRecipients,bccRecipients,receivedDateTime,sentDateTime,isRead,hasAttachments,body,bodyPreview,importance,conversationId,conversationIndex,flag,categories,attachments",
+                "$filter": filter_str
+            }
+            response = requests.get(
+                f"{GRAPH_API_BASE}/me/messages",
+                headers=headers,
+                params=params
+            )
+            if response.status_code != 200:
+                details.append({
+                    "date": received_from,
+                    "error": response.text
+                })
+                continue
+            emails_data = response.json()
+            synced_count = 0
+            for email_data in emails_data.get("value", []):
+                subject = email_data.get("subject", "")
+                if subject.startswith("Your Meta ads receipt") or subject.startswith("Biên lai quảng cáo Meta của bạn"):
+                    email_id = email_data.get("id")
+                    existing_email = db.query(Email).filter_by(account_id=account_id, message_id=email_id).first()
+                    if existing_email:
+                        continue
+                    try:
+                        create_email(db, account_id, email_data)
+                        synced_count += 1
+                    except Exception as e:
+                        continue
+            total_synced += synced_count
+            total_days += 1
+            details.append({
+                "date": received_from,
+                "synced": synced_count,
+                "total_fetched": len(emails_data.get("value", []))
+            })
+        return JSONResponse({
+            "message": f"Đồng bộ thành công {total_synced} email trong {total_days} ngày",
+            "total_synced": total_synced,
+            "days_processed": total_days,
+            "details": details
+        })
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
