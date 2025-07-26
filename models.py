@@ -5,6 +5,19 @@ from datetime import datetime
 # Import Base từ database.py
 from database import Base
 
+class User(Base):
+    """Model cho bảng users - quản trị viên hệ thống"""
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    role = Column(String(50), default="user")  # user, admin, ...
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationship với accounts
+    accounts = relationship("Account", back_populates="user")
+
 class Account(Base):
     """Model cho bảng accounts - lưu thông tin tài khoản người dùng"""
     __tablename__ = "accounts"
@@ -23,12 +36,16 @@ class Account(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active = Column(Boolean, default=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Thêm trường user_id
     
     # Relationship với auth_tokens
     auth_tokens = relationship("AuthToken", back_populates="account", cascade="all, delete-orphan")
     
     # Relationship với emails
     emails = relationship("Email", back_populates="account", cascade="all, delete-orphan")
+    
+    # Relationship với user
+    user = relationship("User", back_populates="accounts")
 
 class AuthToken(Base):
     """Model cho bảng auth_tokens - lưu thông tin token xác thực"""

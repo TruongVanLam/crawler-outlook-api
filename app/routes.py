@@ -8,7 +8,8 @@ from typing import Optional
 import requests
 import io
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
+from pydantic import BaseModel
 
 from database import get_db
 from crud import (
@@ -18,16 +19,252 @@ from crud import (
     get_valid_auth_token,
     get_emails,
     get_email_by_message_id,
-    search_emails
+    search_emails,
+    # User CRUD
+    create_user,
+    get_user_by_email,
+    verify_user_password,
+    get_users,
+    update_user,
+    delete_user,
+    # Account CRUD theo user
+    create_account_for_user,
+    get_accounts_by_user,
+    get_account_by_user_and_id,
+    update_account_for_user,
+    delete_account_for_user
 )
-from models import Account
+from models import Account, User
 from .config import CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, GRAPH_API_BASE
 from .graph_api import get_user_info, get_attachments
 from .services import EmailSyncService
 from .auth import get_valid_access_token
 from .export_service import ExportService
+from .user_auth import create_access_token, get_current_active_user, ACCESS_TOKEN_EXPIRE_MINUTES
 
 router = APIRouter()
+
+# Pydantic models for request/response
+class UserCreate(BaseModel):
+    email: str
+    password: str
+    role: str = "user"
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+class AccountCreate(BaseModel):
+    email: str
+    name: Optional[str] = None
+
+# User Authentication Endpoints
+@router.post("/users/register")
+def register_user(user_data: UserCreate, db: Session = Depends(get_db)):
+    """Đăng ký user mới"""
+    try:
+        # Kiểm tra email đã tồn tại chưa
+        existing_user = get_user_by_email(db, user_data.email)
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Email đã tồn tại")
+        
+        # Tạo user mới
+        user = create_user(db, user_data.email, user_data.password, user_data.role)
+        
+        return JSONResponse({
+            "message": "Đăng ký thành công",
+            "user_id": user.id,
+            "email": user.email,
+            "role": user.role
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/users/login")
+def login_user(user_data: UserLogin, db: Session = Depends(get_db)):
+    """Đăng nhập user"""
+    try:
+        # Xác thực user
+        user = verify_user_password(db, user_data.email, user_data.password)
+        if not user:
+            raise HTTPException(status_code=401, detail="Email hoặc mật khẩu không đúng")
+        
+        # Tạo access token
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": str(user.id)}, expires_delta=access_token_expires
+        )
+        
+        return JSONResponse({
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user_id": user.id,
+            "email": user.email,
+            "role": user.role
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# User Account Management Endpoints
+@router.get("/users/me")
+def get_current_user_info(current_user: User = Depends(get_current_active_user)):
+    """Lấy thông tin user hiện tại"""
+    return JSONResponse({
+        "user_id": current_user.id,
+        "email": current_user.email,
+        "role": current_user.role,
+        "created_at": current_user.created_at.isoformat()
+    })
+
+@router.get("/users/accounts")
+def get_user_accounts(
+    skip: int = 0,
+    limit: int = 100,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Lấy danh sách accounts của user hiện tại"""
+    try:
+        accounts = get_accounts_by_user(db, current_user.id, skip, limit)
+        
+        account_list = []
+        for account in accounts:
+            account_dict = {
+                "id": account.id,
+                "email": account.email,
+                "name": account.name,
+                "display_name": account.display_name,
+                "is_active": account.is_active,
+                "created_at": account.created_at.isoformat(),
+                "updated_at": account.updated_at.isoformat()
+            }
+            account_list.append(account_dict)
+        
+        return JSONResponse({
+            "accounts": account_list,
+            "total": len(account_list),
+            "user_id": current_user.id
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/users/accounts")
+def create_user_account(
+    account_data: AccountCreate,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Tạo account mới cho user hiện tại"""
+    try:
+        # Kiểm tra email đã tồn tại chưa
+        existing_account = get_account_by_email(db, account_data.email)
+        if existing_account:
+            raise HTTPException(status_code=400, detail="Email account đã tồn tại")
+        
+        # Tạo account mới
+        account = create_account_for_user(
+            db, 
+            current_user.id, 
+            account_data.email, 
+            account_data.name
+        )
+        
+        return JSONResponse({
+            "message": "Tạo account thành công",
+            "account_id": account.id,
+            "email": account.email,
+            "name": account.name
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/users/accounts/{account_id}")
+def get_user_account(
+    account_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Lấy thông tin chi tiết account của user"""
+    try:
+        account = get_account_by_user_and_id(db, current_user.id, account_id)
+        if not account:
+            raise HTTPException(status_code=404, detail="Account không tồn tại")
+        
+        account_dict = {
+            "id": account.id,
+            "email": account.email,
+            "name": account.name,
+            "display_name": account.display_name,
+            "user_principal_name": account.user_principal_name,
+            "given_name": account.given_name,
+            "surname": account.surname,
+            "job_title": account.job_title,
+            "office_location": account.office_location,
+            "mobile_phone": account.mobile_phone,
+            "business_phones": account.business_phones,
+            "is_active": account.is_active,
+            "created_at": account.created_at.isoformat(),
+            "updated_at": account.updated_at.isoformat()
+        }
+        
+        return JSONResponse(account_dict)
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/users/accounts/{account_id}")
+def update_user_account(
+    account_id: int,
+    account_data: AccountCreate,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Cập nhật account của user"""
+    try:
+        account = update_account_for_user(
+            db, 
+            current_user.id, 
+            account_id, 
+            email=account_data.email,
+            name=account_data.name
+        )
+        
+        if not account:
+            raise HTTPException(status_code=404, detail="Account không tồn tại")
+        
+        return JSONResponse({
+            "message": "Cập nhật account thành công",
+            "account_id": account.id,
+            "email": account.email,
+            "name": account.name
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/users/accounts/{account_id}")
+def delete_user_account(
+    account_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Xóa account của user"""
+    try:
+        success = delete_account_for_user(db, current_user.id, account_id)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Account không tồn tại")
+        
+        return JSONResponse({
+            "message": "Xóa account thành công"
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/login")
@@ -93,49 +330,120 @@ def callback(code: str, db: Session = Depends(get_db)):
 
 @router.get("/mails")
 def get_mails(
-    account_id: int,
-    top: Optional[int] = 10,
+    account_ids: str,  # Comma-separated list of account IDs
+    from_date: Optional[str] = None,  # Format: YYYY-MM-DD
+    to_date: Optional[str] = None,    # Format: YYYY-MM-DD
+    top: Optional[int] = 20,
     skip: Optional[int] = 0,
-    is_read: Optional[bool] = None,
-    has_attachments: Optional[bool] = None,
-    subject_filter: Optional[str] = None,
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """
-    Lấy danh sách email từ database
+    Lấy danh sách email từ database theo account_ids và khoảng thời gian
     """
     try:
-        # Lấy emails từ database
-        emails = get_emails(db, account_id, skip, top, is_read, has_attachments)
+        # Parse account_ids từ string thành list
+        account_id_list = [int(id.strip()) for id in account_ids.split(',') if id.strip()]
         
-        # Chuyển đổi thành dict để serialize
-        email_list = []
-        for email in emails:
-            email_dict = {
-                "id": email.id,
-                "message_id": email.message_id,
-                "subject": email.subject,
-                "from": {
-                    "emailAddress": {
-                        "address": email.from_email,
-                        "name": email.from_name
-                    }
-                },
-                "receivedDateTime": email.received_date_time.isoformat() if email.received_date_time else None,
-                "isRead": email.is_read,
-                "hasAttachments": email.has_attachments,
-                "bodyPreview": email.body_preview,
-                "importance": email.importance,
-                "created_at": email.created_at.isoformat(),
-                "updated_at": email.updated_at.isoformat()
-            }
-            email_list.append(email_dict)
+        if not account_id_list:
+            raise HTTPException(status_code=400, detail="account_ids không được để trống")
+        
+        # Kiểm tra quyền truy cập accounts
+        user_accounts = get_accounts_by_user(db, current_user.id)
+        user_account_ids = [acc.id for acc in user_accounts]
+        
+        # Kiểm tra xem tất cả account_ids có thuộc về user không
+        unauthorized_accounts = [acc_id for acc_id in account_id_list if acc_id not in user_account_ids]
+        if unauthorized_accounts:
+            raise HTTPException(
+                status_code=403, 
+                detail=f"Không có quyền truy cập accounts: {unauthorized_accounts}"
+            )
+        
+        # Validate date format nếu có
+        if from_date:
+            try:
+                datetime.strptime(from_date, '%Y-%m-%d')
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Định dạng from_date phải là YYYY-MM-DD")
+        
+        if to_date:
+            try:
+                datetime.strptime(to_date, '%Y-%m-%d')
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Định dạng to_date phải là YYYY-MM-DD")
+        
+        # Lấy emails từ database cho tất cả account_ids
+        all_emails = []
+        total_count = 0
+        
+        for account_id in account_id_list:
+            # Lấy emails từ database cho account này
+            emails = get_emails(db, account_id, skip, top)
+            
+            # Filter theo date range nếu có
+            if from_date or to_date:
+                filtered_emails = []
+                for email in emails:
+                    if email.received_date_time:
+                        email_date = email.received_date_time.date()
+                        
+                        # Kiểm tra from_date
+                        if from_date:
+                            from_date_obj = datetime.strptime(from_date, '%Y-%m-%d').date()
+                            if email_date < from_date_obj:
+                                continue
+                        
+                        # Kiểm tra to_date
+                        if to_date:
+                            to_date_obj = datetime.strptime(to_date, '%Y-%m-%d').date()
+                            if email_date > to_date_obj:
+                                continue
+                        
+                        filtered_emails.append(email)
+                emails = filtered_emails
+            
+            # Chuyển đổi thành dict để serialize
+            for email in emails:
+                email_dict = {
+                    "id": email.id,
+                    "account_id": email.account_id,
+                    "message_id": email.message_id,
+                    "subject": email.subject,
+                    "from": {
+                        "emailAddress": {
+                            "address": email.from_email,
+                            "name": email.from_name
+                        }
+                    },
+                    "receivedDateTime": email.received_date_time.isoformat() if email.received_date_time else None,
+                    "isRead": email.is_read,
+                    "hasAttachments": email.has_attachments,
+                    "bodyPreview": email.body_preview,
+                    "importance": email.importance,
+                    "created_at": email.created_at.isoformat(),
+                    "updated_at": email.updated_at.isoformat()
+                }
+                all_emails.append(email_dict)
+                total_count += 1
+        
+        # Sắp xếp theo receivedDateTime (mới nhất trước)
+        all_emails.sort(key=lambda x: x["receivedDateTime"] or "", reverse=True)
+        
+        # Apply pagination
+        start_index = skip
+        end_index = start_index + top
+        paginated_emails = all_emails[start_index:end_index]
         
         return JSONResponse({
-            "emails": email_list,
-            "total": len(email_list),
+            "emails": paginated_emails,
+            "count": len(paginated_emails),
+            "total": total_count,
             "skip": skip,
-            "top": top
+            "top": top,
+            "account_ids": account_id_list,
+            "from_date": from_date,
+            "to_date": to_date
         })
         
     except Exception as e:
@@ -297,15 +605,25 @@ def sync_all_emails(
 
 @router.get("/mails/unread/")
 def get_unread_mails(
-    account_id: int,
+    account_ids: str,  # Comma-separated list of account IDs
+    from_date: Optional[str] = None,  # Format: YYYY-MM-DD
+    to_date: Optional[str] = None,    # Format: YYYY-MM-DD
     top: Optional[int] = 10, 
     skip: Optional[int] = 0,
     db: Session = Depends(get_db)
 ):
     """
-    Lấy danh sách email chưa đọc từ database
+    Lấy danh sách email chưa đọc từ database theo account_ids và khoảng thời gian
     """
-    return get_mails(account_id=account_id, top=top, skip=skip, is_read=False, db=db)
+    return get_mails(
+        account_ids=account_ids, 
+        from_date=from_date,
+        to_date=to_date,
+        top=top, 
+        skip=skip, 
+        is_read=False, 
+        db=db
+    )
 
 
 @router.get("/mails/search/")
@@ -442,6 +760,7 @@ def export_meta_receipts(
     account_ids: str,  # Comma-separated list of account IDs
     from_date: str,    # Format: YYYY-MM-DD
     to_date: str,      # Format: YYYY-MM-DD
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -454,6 +773,18 @@ def export_meta_receipts(
         
         if not account_id_list:
             raise HTTPException(status_code=400, detail="account_ids không được để trống")
+        
+        # Kiểm tra quyền truy cập accounts
+        user_accounts = get_accounts_by_user(db, current_user.id)
+        user_account_ids = [acc.id for acc in user_accounts]
+        
+        # Kiểm tra xem tất cả account_ids có thuộc về user không
+        unauthorized_accounts = [acc_id for acc_id in account_id_list if acc_id not in user_account_ids]
+        if unauthorized_accounts:
+            raise HTTPException(
+                status_code=403, 
+                detail=f"Không có quyền truy cập accounts: {unauthorized_accounts}"
+            )
         
         # Validate date format
         try:

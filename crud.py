@@ -3,8 +3,137 @@ from sqlalchemy import and_, or_
 from datetime import datetime, timedelta
 from typing import Optional, List
 import json
+import bcrypt
+from passlib.context import CryptContext
 
-from models import Account, AuthToken, Email, EmailAttachment
+from models import Account, AuthToken, Email, EmailAttachment, User
+
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# User CRUD operations
+def create_user(db: Session, email: str, password: str, role: str = "user"):
+    """Tạo user mới"""
+    # Hash password
+    hashed_password = pwd_context.hash(password)
+    
+    db_user = User(
+        email=email,
+        password_hash=hashed_password,
+        role=role
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+def get_user_by_email(db: Session, email: str):
+    """Lấy user theo email"""
+    return db.query(User).filter(User.email == email).first()
+
+def get_user_by_id(db: Session, user_id: int):
+    """Lấy user theo ID"""
+    return db.query(User).filter(User.id == user_id).first()
+
+def verify_user_password(db: Session, email: str, password: str):
+    """Xác thực user password"""
+    user = get_user_by_email(db, email)
+    if not user:
+        return None
+    if pwd_context.verify(password, user.password_hash):
+        return user
+    return None
+
+def get_users(db: Session, skip: int = 0, limit: int = 100):
+    """Lấy danh sách users"""
+    return db.query(User).offset(skip).limit(limit).all()
+
+def update_user(db: Session, user_id: int, **kwargs):
+    """Cập nhật thông tin user"""
+    user = get_user_by_id(db, user_id)
+    if not user:
+        return None
+    
+    for key, value in kwargs.items():
+        if hasattr(user, key):
+            setattr(user, key, value)
+    
+    user.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(user)
+    return user
+
+def delete_user(db: Session, user_id: int):
+    """Xóa user"""
+    user = get_user_by_id(db, user_id)
+    if not user:
+        return False
+    
+    db.delete(user)
+    db.commit()
+    return True
+
+# Account CRUD operations (theo user)
+def create_account_for_user(db: Session, user_id: int, email: str, name: str = None, user_info: dict = None):
+    """Tạo account cho user cụ thể"""
+    db_account = Account(
+        email=email,
+        name=name,
+        user_id=user_id,
+        user_principal_name=user_info.get("userPrincipalName") if user_info else None,
+        display_name=user_info.get("displayName") if user_info else None,
+        given_name=user_info.get("givenName") if user_info else None,
+        surname=user_info.get("surname") if user_info else None,
+        job_title=user_info.get("jobTitle") if user_info else None,
+        office_location=user_info.get("officeLocation") if user_info else None,
+        mobile_phone=user_info.get("mobilePhone") if user_info else None,
+        business_phones=user_info.get("businessPhones") if user_info else None
+    )
+    db.add(db_account)
+    db.commit()
+    db.refresh(db_account)
+    return db_account
+
+def get_accounts_by_user(db: Session, user_id: int, skip: int = 0, limit: int = 100):
+    """Lấy danh sách accounts của user"""
+    return db.query(Account).filter(
+        Account.user_id == user_id,
+        Account.is_active == True
+    ).offset(skip).limit(limit).all()
+
+def get_account_by_user_and_id(db: Session, user_id: int, account_id: int):
+    """Lấy account theo user_id và account_id"""
+    return db.query(Account).filter(
+        Account.user_id == user_id,
+        Account.id == account_id,
+        Account.is_active == True
+    ).first()
+
+def update_account_for_user(db: Session, user_id: int, account_id: int, **kwargs):
+    """Cập nhật account của user"""
+    account = get_account_by_user_and_id(db, user_id, account_id)
+    if not account:
+        return None
+    
+    for key, value in kwargs.items():
+        if hasattr(account, key):
+            setattr(account, key, value)
+    
+    account.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(account)
+    return account
+
+def delete_account_for_user(db: Session, user_id: int, account_id: int):
+    """Xóa account của user (soft delete)"""
+    account = get_account_by_user_and_id(db, user_id, account_id)
+    if not account:
+        return False
+    
+    account.is_active = False
+    account.updated_at = datetime.utcnow()
+    db.commit()
+    return True
 
 # Account CRUD operations
 def create_account(db: Session, email: str, name: str = None, user_info: dict = None):
