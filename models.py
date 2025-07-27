@@ -116,3 +116,30 @@ class EmailAttachment(Base):
     
     # Relationship với email
     email = relationship("Email") 
+
+class MetaReceipt(Base):
+    """Model cho bảng meta_receipts - lưu thông tin đã lọc từ Meta receipt emails"""
+    __tablename__ = "meta_receipts"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    email_id = Column(Integer, ForeignKey("emails.id"), nullable=False)
+    message_id = Column(String(500), nullable=False)  # ID từ Microsoft Graph
+    
+    # Thông tin đã lọc từ email
+    date = Column(DateTime, nullable=True)
+    account_id_meta = Column(String(255), nullable=True)  # Account ID từ Meta
+    transaction_id = Column(String(255), nullable=True)
+    payment = Column(String(255), nullable=True)
+    card_number = Column(String(255), nullable=True)
+    reference_number = Column(String(255), nullable=True)
+    status = Column(String(50), nullable=True)  # Success, Fail, Duplicate, None
+    
+    # Thông tin bổ sung
+    is_processed = Column(Boolean, default=False)  # Đánh dấu đã xử lý
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationship với account và email
+    account = relationship("Account")
+    email = relationship("Email") 

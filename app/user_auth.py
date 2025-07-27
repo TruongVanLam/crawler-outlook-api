@@ -14,7 +14,7 @@ from crud import get_user_by_id
 # JWT Configuration
 SECRET_KEY = "your-secret-key-here-change-in-production"  # Thay đổi trong production
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 3600
 
 security = HTTPBearer()
 

@@ -9,7 +9,7 @@ from typing import List, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
-from models import Email, Account
+from models import Email, Account, MetaReceipt
 from .email_utils_bs4 import extract_meta_receipt_info_combined
 
 
@@ -26,59 +26,38 @@ class ExportService:
         to_date: str
     ) -> Dict[int, List[Dict[str, Any]]]:
         """
-        Lấy tất cả email Meta receipt theo account_ids và khoảng thời gian
+        Lấy tất cả Meta receipts từ bảng meta_receipts theo account_ids và khoảng thời gian
         """
-        emails_by_account = {}
+        receipts_by_account = {}
         
         for account_id in account_ids:
-            # Lấy emails từ database theo điều kiện
-            emails = self.db.query(Email).filter(
+            # Lấy meta receipts từ database theo điều kiện
+            receipts = self.db.query(MetaReceipt).filter(
                 and_(
-                    Email.account_id == account_id,
-                    Email.received_date_time >= f"{from_date}T00:00:00",
-                    Email.received_date_time <= f"{to_date}T23:59:59"
+                    MetaReceipt.account_id == account_id,
+                    MetaReceipt.date >= f"{from_date}T00:00:00",
+                    MetaReceipt.date <= f"{to_date}T23:59:59"
                 )
-            ).all()
+            ).order_by(MetaReceipt.date.desc()).all()
             
-            account_emails = []
-            transaction_ids_seen = set()  # Để theo dõi transaction IDs đã gặp
+            account_receipts = []
             
-            for email in emails:
-                # Trích xuất thông tin từ body và body_preview
-                body_html = email.body or ""
-                body_preview = email.body_preview or ""
-                meta_info = extract_meta_receipt_info_combined(body_html, body_preview)
-                
-                transaction_id = meta_info.get('transaction_id')
-                
-                # Kiểm tra xem có text "failed" trong body không
-                body_text = (body_html + " " + body_preview).lower()
-                if "failed" in body_text:
-                    status = 'Fail'
-                else:
-                    # Kiểm tra xem transaction_id đã xuất hiện chưa
-                    if transaction_id and transaction_id in transaction_ids_seen:
-                        status = 'Duplicate'
-                    else:
-                        status = 'Success'
-                        if transaction_id:
-                            transaction_ids_seen.add(transaction_id)
-                
-                # Tạo row data
+            for receipt in receipts:
+                # Tạo row data từ meta receipt
                 row_data = {
-                    'Date': email.received_date_time.isoformat() if email.received_date_time else None,
-                    'account_id': meta_info.get('account_id'),
-                    'transaction_id': transaction_id,
-                    'payment': meta_info.get('payment'),
-                    'card_number': f"Visa · {meta_info.get('card_number')}" if meta_info.get('card_number') else None,
-                    'reference_number': meta_info.get('reference_number'),
-                    'status': status
+                    'Date': receipt.date.isoformat() if receipt.date else None,
+                    'Account ID': receipt.account_id_meta,
+                    'Transaction ID': receipt.transaction_id,
+                    'Payment': receipt.payment,
+                    'Card Number': f"Visa · {receipt.card_number}" if receipt.card_number else None,
+                    'Reference Number': receipt.reference_number,
+                    'Status': receipt.status
                 }
-                account_emails.append(row_data)
+                account_receipts.append(row_data)
             
-            emails_by_account[account_id] = account_emails
+            receipts_by_account[account_id] = account_receipts
         
-        return emails_by_account
+        return receipts_by_account
     
     def create_excel_file(self, data: List[Dict[str, Any]], account_email: str) -> io.BytesIO:
         """
@@ -181,8 +160,8 @@ class ExportService:
         """
         Xuất Meta receipts theo yêu cầu và trả về file ZIP
         """
-        # Lấy emails theo điều kiện
-        emails_by_account = self.get_meta_receipt_emails(account_ids, from_date, to_date)
+        # Lấy meta receipts theo điều kiện
+        receipts_by_account = self.get_meta_receipt_emails(account_ids, from_date, to_date)
         
         excel_files = {}
         
@@ -192,11 +171,11 @@ class ExportService:
             if not account:
                 continue
             
-            account_emails = emails_by_account.get(account_id, [])
+            account_receipts = receipts_by_account.get(account_id, [])
             
-            if account_emails:  # Chỉ tạo file nếu có data
+            if account_receipts:  # Chỉ tạo file nếu có data
                 # Tạo Excel file cho account này
-                excel_data = self.create_excel_file(account_emails, account.email)
+                excel_data = self.create_excel_file(account_receipts, account.email)
                 
                 # Tạo tên file: meta_receipts_{email}_{from_date}_{to_date}.xlsx
                 safe_email = account.email.replace('@', '_at_').replace('.', '_')

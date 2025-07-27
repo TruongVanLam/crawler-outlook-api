@@ -32,7 +32,10 @@ from crud import (
     get_accounts_by_user,
     get_account_by_user_and_id,
     update_account_for_user,
-    delete_account_for_user
+    delete_account_for_user,
+    # MetaReceipt CRUD
+    get_meta_receipts,
+    get_meta_receipts_count
 )
 from models import Account, User
 from .config import CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, GRAPH_API_BASE
@@ -40,6 +43,7 @@ from .graph_api import get_user_info, get_attachments
 from .services import EmailSyncService
 from .auth import get_valid_access_token
 from .export_service import ExportService
+from .meta_receipt_service import MetaReceiptService
 from .user_auth import create_access_token, get_current_active_user, ACCESS_TOKEN_EXPIRE_MINUTES
 
 router = APIRouter()
@@ -335,11 +339,12 @@ def get_mails(
     to_date: Optional[str] = None,    # Format: YYYY-MM-DD
     top: Optional[int] = 20,
     skip: Optional[int] = 0,
+    status: Optional[str] = None,  # Filter theo status: Success, Fail, Duplicate, None
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """
-    Lấy danh sách email từ database theo account_ids và khoảng thời gian
+    Lấy danh sách Meta receipts từ database theo account_ids và khoảng thời gian
     """
     try:
         # Parse account_ids từ string thành list
@@ -373,77 +378,62 @@ def get_mails(
             except ValueError:
                 raise HTTPException(status_code=400, detail="Định dạng to_date phải là YYYY-MM-DD")
         
-        # Lấy emails từ database cho tất cả account_ids
-        all_emails = []
-        total_count = 0
+        # Validate status nếu có
+        valid_statuses = ['Success', 'Fail', 'Duplicate', 'None']
+        if status and status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Status phải là một trong: {', '.join(valid_statuses)}")
         
-        for account_id in account_id_list:
-            # Lấy emails từ database cho account này
-            emails = get_emails(db, account_id, skip, top)
-            
-            # Filter theo date range nếu có
-            if from_date or to_date:
-                filtered_emails = []
-                for email in emails:
-                    if email.received_date_time:
-                        email_date = email.received_date_time.date()
-                        
-                        # Kiểm tra from_date
-                        if from_date:
-                            from_date_obj = datetime.strptime(from_date, '%Y-%m-%d').date()
-                            if email_date < from_date_obj:
-                                continue
-                        
-                        # Kiểm tra to_date
-                        if to_date:
-                            to_date_obj = datetime.strptime(to_date, '%Y-%m-%d').date()
-                            if email_date > to_date_obj:
-                                continue
-                        
-                        filtered_emails.append(email)
-                emails = filtered_emails
-            
-            # Chuyển đổi thành dict để serialize
-            for email in emails:
-                email_dict = {
-                    "id": email.id,
-                    "account_id": email.account_id,
-                    "message_id": email.message_id,
-                    "subject": email.subject,
-                    "from": {
-                        "emailAddress": {
-                            "address": email.from_email,
-                            "name": email.from_name
-                        }
-                    },
-                    "receivedDateTime": email.received_date_time.isoformat() if email.received_date_time else None,
-                    "isRead": email.is_read,
-                    "hasAttachments": email.has_attachments,
-                    "bodyPreview": email.body_preview,
-                    "importance": email.importance,
-                    "created_at": email.created_at.isoformat(),
-                    "updated_at": email.updated_at.isoformat()
-                }
-                all_emails.append(email_dict)
-                total_count += 1
+        # Lấy meta receipts từ database
+        meta_receipts = get_meta_receipts(
+            db, 
+            account_id_list, 
+            from_date, 
+            to_date, 
+            skip, 
+            top, 
+            status
+        )
         
-        # Sắp xếp theo receivedDateTime (mới nhất trước)
-        all_emails.sort(key=lambda x: x["receivedDateTime"] or "", reverse=True)
+        # Đếm tổng số records
+        total_count = get_meta_receipts_count(
+            db, 
+            account_id_list, 
+            from_date, 
+            to_date, 
+            status
+        )
         
-        # Apply pagination
-        start_index = skip
-        end_index = start_index + top
-        paginated_emails = all_emails[start_index:end_index]
+        # Chuyển đổi thành dict để serialize
+        receipts_list = []
+        for receipt in meta_receipts:
+            receipt_dict = {
+                "id": receipt.id,
+                "account_id": receipt.account_id,
+                "email_id": receipt.email_id,
+                "message_id": receipt.message_id,
+                "date": receipt.date.isoformat() if receipt.date else None,
+                "account_id_meta": receipt.account_id_meta,
+                "transaction_id": receipt.transaction_id,
+                "payment": receipt.payment,
+                "card_number": receipt.card_number,
+                "reference_number": receipt.reference_number,
+                "status": receipt.status,
+                "is_processed": receipt.is_processed,
+                "created_at": receipt.created_at.isoformat(),
+                "updated_at": receipt.updated_at.isoformat()
+            }
+            receipts_list.append(receipt_dict)
         
         return JSONResponse({
-            "emails": paginated_emails,
-            "count": len(paginated_emails),
+            "meta_receipts": receipts_list,
+            "count": len(receipts_list),
             "total": total_count,
             "skip": skip,
             "top": top,
             "account_ids": account_id_list,
             "from_date": from_date,
-            "to_date": to_date
+            "to_date": to_date,
+            "status": status
         })
         
     except Exception as e:
@@ -603,27 +593,110 @@ def sync_all_emails(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/mails/unread/")
-def get_unread_mails(
+@router.post("/mails/process-meta-receipts/")
+def process_meta_receipts(
     account_ids: str,  # Comma-separated list of account IDs
     from_date: Optional[str] = None,  # Format: YYYY-MM-DD
     to_date: Optional[str] = None,    # Format: YYYY-MM-DD
-    top: Optional[int] = 10, 
-    skip: Optional[int] = 0,
+    limit: Optional[int] = 100,
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """
-    Lấy danh sách email chưa đọc từ database theo account_ids và khoảng thời gian
+    Xử lý emails và tạo Meta receipts cho các accounts
     """
-    return get_mails(
-        account_ids=account_ids, 
-        from_date=from_date,
-        to_date=to_date,
-        top=top, 
-        skip=skip, 
-        is_read=False, 
-        db=db
-    )
+    try:
+        # Parse account_ids từ string thành list
+        account_id_list = [int(id.strip()) for id in account_ids.split(',') if id.strip()]
+        
+        if not account_id_list:
+            raise HTTPException(status_code=400, detail="account_ids không được để trống")
+        
+        # Kiểm tra quyền truy cập accounts
+        user_accounts = get_accounts_by_user(db, current_user.id)
+        user_account_ids = [acc.id for acc in user_accounts]
+        
+        # Kiểm tra xem tất cả account_ids có thuộc về user không
+        unauthorized_accounts = [acc_id for acc_id in account_id_list if acc_id not in user_account_ids]
+        if unauthorized_accounts:
+            raise HTTPException(
+                status_code=403, 
+                detail=f"Không có quyền truy cập accounts: {unauthorized_accounts}"
+            )
+        
+        # Validate date format nếu có
+        if from_date:
+            try:
+                datetime.strptime(from_date, '%Y-%m-%d')
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Định dạng from_date phải là YYYY-MM-DD")
+        
+        if to_date:
+            try:
+                datetime.strptime(to_date, '%Y-%m-%d')
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Định dạng to_date phải là YYYY-MM-DD")
+        
+        # Xử lý Meta receipts
+        service = MetaReceiptService(db)
+        results = service.process_multiple_accounts(account_id_list, from_date, to_date, limit)
+        
+        return JSONResponse({
+            "message": "Xử lý Meta receipts thành công",
+            "results": results,
+            "account_ids": account_id_list,
+            "from_date": from_date,
+            "to_date": to_date
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/mails/reprocess-failed-receipts/")
+def reprocess_failed_receipts(
+    account_ids: str,  # Comma-separated list of account IDs
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Xử lý lại các Meta receipts có status 'Fail' hoặc 'None'
+    """
+    try:
+        # Parse account_ids từ string thành list
+        account_id_list = [int(id.strip()) for id in account_ids.split(',') if id.strip()]
+        
+        if not account_id_list:
+            raise HTTPException(status_code=400, detail="account_ids không được để trống")
+        
+        # Kiểm tra quyền truy cập accounts
+        user_accounts = get_accounts_by_user(db, current_user.id)
+        user_account_ids = [acc.id for acc in user_accounts]
+        
+        # Kiểm tra xem tất cả account_ids có thuộc về user không
+        unauthorized_accounts = [acc_id for acc_id in account_id_list if acc_id not in user_account_ids]
+        if unauthorized_accounts:
+            raise HTTPException(
+                status_code=403, 
+                detail=f"Không có quyền truy cập accounts: {unauthorized_accounts}"
+            )
+        
+        # Xử lý lại failed receipts
+        service = MetaReceiptService(db)
+        results = []
+        
+        for account_id in account_id_list:
+            result = service.reprocess_failed_receipts(account_id)
+            result['account_id'] = account_id
+            results.append(result)
+        
+        return JSONResponse({
+            "message": "Xử lý lại failed receipts thành công",
+            "results": results,
+            "account_ids": account_id_list
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/mails/search/")

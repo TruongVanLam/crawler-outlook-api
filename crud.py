@@ -6,7 +6,7 @@ import json
 import bcrypt
 from passlib.context import CryptContext
 
-from models import Account, AuthToken, Email, EmailAttachment, User
+from models import Account, AuthToken, Email, EmailAttachment, User, MetaReceipt
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -390,3 +390,143 @@ def save_user_and_token_to_db(db: Session, email: str, name: str, access_token: 
     auth_token = create_auth_token(db, account.id, access_token, refresh_token, expires_in)
     
     return account, auth_token 
+
+# MetaReceipt CRUD operations
+def create_meta_receipt(
+    db: Session, 
+    account_id: int, 
+    email_id: int, 
+    message_id: str,
+    date: datetime = None,
+    account_id_meta: str = None,
+    transaction_id: str = None,
+    payment: str = None,
+    card_number: str = None,
+    reference_number: str = None,
+    status: str = None
+):
+    """Tạo meta receipt mới"""
+    db_meta_receipt = MetaReceipt(
+        account_id=account_id,
+        email_id=email_id,
+        message_id=message_id,
+        date=date,
+        account_id_meta=account_id_meta,
+        transaction_id=transaction_id,
+        payment=payment,
+        card_number=card_number,
+        reference_number=reference_number,
+        status=status
+    )
+    db.add(db_meta_receipt)
+    db.commit()
+    db.refresh(db_meta_receipt)
+    return db_meta_receipt
+
+def get_meta_receipts(
+    db: Session, 
+    account_ids: List[int], 
+    from_date: str = None, 
+    to_date: str = None,
+    skip: int = 0, 
+    limit: int = 100,
+    status: str = None
+):
+    """Lấy danh sách meta receipts theo điều kiện"""
+    query = db.query(MetaReceipt).filter(MetaReceipt.account_id.in_(account_ids))
+    
+    # Filter theo date range
+    if from_date:
+        from_date_obj = datetime.strptime(from_date, '%Y-%m-%d')
+        query = query.filter(MetaReceipt.date >= from_date_obj)
+    
+    if to_date:
+        to_date_obj = datetime.strptime(to_date, '%Y-%m-%d')
+        query = query.filter(MetaReceipt.date <= to_date_obj)
+    
+    # Filter theo status
+    if status:
+        query = query.filter(MetaReceipt.status == status)
+    
+    # Sắp xếp theo date (mới nhất trước)
+    query = query.order_by(MetaReceipt.date.desc())
+    
+    # Pagination
+    query = query.offset(skip).limit(limit)
+    
+    return query.all()
+
+def get_meta_receipt_by_message_id(db: Session, account_id: int, message_id: str):
+    """Lấy meta receipt theo message_id"""
+    return db.query(MetaReceipt).filter(
+        and_(
+            MetaReceipt.account_id == account_id,
+            MetaReceipt.message_id == message_id
+        )
+    ).first()
+
+def update_meta_receipt(db: Session, meta_receipt_id: int, **kwargs):
+    """Cập nhật meta receipt"""
+    meta_receipt = db.query(MetaReceipt).filter(MetaReceipt.id == meta_receipt_id).first()
+    if not meta_receipt:
+        return None
+    
+    for key, value in kwargs.items():
+        if hasattr(meta_receipt, key):
+            setattr(meta_receipt, key, value)
+    
+    meta_receipt.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(meta_receipt)
+    return meta_receipt
+
+def delete_meta_receipt(db: Session, meta_receipt_id: int):
+    """Xóa meta receipt"""
+    meta_receipt = db.query(MetaReceipt).filter(MetaReceipt.id == meta_receipt_id).first()
+    if not meta_receipt:
+        return False
+    
+    db.delete(meta_receipt)
+    db.commit()
+    return True
+
+def bulk_create_meta_receipts(db: Session, meta_receipts_data: List[dict]):
+    """Tạo nhiều meta receipts cùng lúc"""
+    meta_receipts = []
+    for data in meta_receipts_data:
+        meta_receipt = MetaReceipt(**data)
+        meta_receipts.append(meta_receipt)
+    
+    db.add_all(meta_receipts)
+    db.commit()
+    
+    # Refresh tất cả objects
+    for meta_receipt in meta_receipts:
+        db.refresh(meta_receipt)
+    
+    return meta_receipts
+
+def get_meta_receipts_count(
+    db: Session, 
+    account_ids: List[int], 
+    from_date: str = None, 
+    to_date: str = None,
+    status: str = None
+):
+    """Đếm số lượng meta receipts theo điều kiện"""
+    query = db.query(MetaReceipt).filter(MetaReceipt.account_id.in_(account_ids))
+    
+    # Filter theo date range
+    if from_date:
+        from_date_obj = datetime.strptime(from_date, '%Y-%m-%d')
+        query = query.filter(MetaReceipt.date >= from_date_obj)
+    
+    if to_date:
+        to_date_obj = datetime.strptime(to_date, '%Y-%m-%d')
+        query = query.filter(MetaReceipt.date <= to_date_obj)
+    
+    # Filter theo status
+    if status:
+        query = query.filter(MetaReceipt.status == status)
+    
+    return query.count() 
