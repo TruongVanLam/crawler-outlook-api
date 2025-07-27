@@ -337,8 +337,8 @@ def get_mails(
     account_ids: str,  # Comma-separated list of account IDs
     from_date: Optional[str] = None,  # Format: YYYY-MM-DD
     to_date: Optional[str] = None,    # Format: YYYY-MM-DD
-    top: Optional[int] = 20,
-    skip: Optional[int] = 0,
+    page_size: Optional[int] = 50,
+    current_page: Optional[int] = 1,
     status: Optional[str] = None,  # Filter theo status: Success, Fail, Duplicate, None
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
@@ -383,6 +383,9 @@ def get_mails(
         if status and status not in valid_statuses:
             raise HTTPException(status_code=400, detail=f"Status phải là một trong: {', '.join(valid_statuses)}")
         
+        # Tính toán skip từ current_page và page_size
+        skip = (current_page - 1) * page_size
+        
         # Lấy meta receipts từ database
         meta_receipts = get_meta_receipts(
             db, 
@@ -390,7 +393,7 @@ def get_mails(
             from_date, 
             to_date, 
             skip, 
-            top, 
+            page_size, 
             status
         )
         
@@ -428,8 +431,9 @@ def get_mails(
             "meta_receipts": receipts_list,
             "count": len(receipts_list),
             "total": total_count,
-            "skip": skip,
-            "top": top,
+            "current_page": current_page,
+            "page_size": page_size,
+            "total_pages": (total_count + page_size - 1) // page_size,
             "account_ids": account_id_list,
             "from_date": from_date,
             "to_date": to_date,
