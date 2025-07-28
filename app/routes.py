@@ -45,6 +45,7 @@ from .auth import get_valid_access_token
 from .export_service import ExportService
 from .meta_receipt_service import MetaReceiptService
 from .user_auth import create_access_token, get_current_active_user, ACCESS_TOKEN_EXPIRE_MINUTES
+from .auto_sync_service import auto_sync_service
 
 router = APIRouter()
 
@@ -328,6 +329,9 @@ def callback(code: str, db: Session = Depends(get_db)):
     account, auth_token = save_user_and_token_to_db(
         db, email, name, access_token, refresh_token, expires_in, me
     )
+    
+    # Add to auto sync queue
+    auto_sync_service.add_new_account(account.id)
     
     return {"message": "Thêm tài khoản thành công!", "email": email, "account_id": account.id}
 
@@ -828,6 +832,57 @@ def get_accounts(db: Session = Depends(get_db)):
         
         return JSONResponse({"accounts": account_list, "total": len(account_list)})
         
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Auto Sync Service Management Endpoints
+@router.post("/auto-sync/start")
+def start_auto_sync():
+    """Start the auto sync service"""
+    try:
+        auto_sync_service.start_auto_sync()
+        return JSONResponse({
+            "message": "Auto sync service started successfully",
+            "status": auto_sync_service.get_sync_status()
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/auto-sync/stop")
+def stop_auto_sync():
+    """Stop the auto sync service"""
+    try:
+        auto_sync_service.stop_auto_sync()
+        return JSONResponse({
+            "message": "Auto sync service stopped successfully",
+            "status": auto_sync_service.get_sync_status()
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/auto-sync/status")
+def get_auto_sync_status():
+    """Get the current status of auto sync service"""
+    try:
+        return JSONResponse({
+            "status": auto_sync_service.get_sync_status()
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/auto-sync/add-account/{account_id}")
+def add_account_to_sync(account_id: int):
+    """Manually add an account to the auto sync queue"""
+    try:
+        auto_sync_service.add_new_account(account_id)
+        return JSONResponse({
+            "message": f"Account {account_id} added to auto sync queue",
+            "status": auto_sync_service.get_sync_status()
+        })
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) 
 
