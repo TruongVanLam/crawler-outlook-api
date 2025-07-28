@@ -7,7 +7,11 @@ from contextlib import asynccontextmanager
 
 from database import create_tables, engine
 from app.routes import router
+
 from app.auto_sync_service import auto_sync_service
+
+from fastapi.middleware.cors import CORSMiddleware
+
 
 
 @asynccontextmanager
@@ -37,6 +41,14 @@ app = FastAPI(
     description="API để đồng bộ email từ Microsoft Graph API",
     version="1.0.0",
     lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://outlook-mail.vercel.app"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Include routes
