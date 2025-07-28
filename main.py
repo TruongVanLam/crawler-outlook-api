@@ -3,16 +3,44 @@ Main FastAPI application
 """
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
 
 from database import create_tables, engine
 from app.routes import router
+
+from app.auto_sync_service import auto_sync_service
+
 from fastapi.middleware.cors import CORSMiddleware
 
-# Tạo FastAPI app
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan event handler for startup and shutdown"""
+    # Startup
+    try:
+        # Start auto sync service
+        auto_sync_service.start_auto_sync()
+        print("Auto sync service started on startup")
+    except Exception as e:
+        print(f"Failed to start auto sync service: {str(e)}")
+    
+    yield
+    
+    # Shutdown
+    try:
+        auto_sync_service.stop_auto_sync()
+        print("Auto sync service stopped on shutdown")
+    except Exception as e:
+        print(f"Failed to stop auto sync service: {str(e)}")
+
+
+# Tạo FastAPI app với lifespan
 app = FastAPI(
     title="Email Sync API",
     description="API để đồng bộ email từ Microsoft Graph API",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 app.add_middleware(

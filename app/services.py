@@ -138,7 +138,7 @@ class EmailSyncService:
     
     def sync_daily_emails(self) -> Dict[str, Any]:
         """
-        Đồng bộ email mới hàng ngày
+        Đồng bộ email mới hàng ngày với tối đa 999 emails
         """
         today = datetime.utcnow().date()
         yesterday = today - timedelta(days=1)
@@ -147,7 +147,8 @@ class EmailSyncService:
         received_to = today.strftime('%Y-%m-%d')
         
         try:
-            result = self.sync_emails_by_date_range(received_from, received_to)
+            # Sử dụng tối đa 999 emails cho daily sync
+            result = self.sync_emails_by_date_range(received_from, received_to, top=999)
             
             return {
                 "total_synced": result["synced_count"],
