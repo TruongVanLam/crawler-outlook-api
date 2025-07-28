@@ -6,12 +6,21 @@ from fastapi.responses import JSONResponse
 
 from database import create_tables, engine
 from app.routes import router
+from fastapi.middleware.cors import CORSMiddleware
 
 # Tạo FastAPI app
 app = FastAPI(
     title="Email Sync API",
     description="API để đồng bộ email từ Microsoft Graph API",
     version="1.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://outlook-mail.vercel.app/"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Include routes
