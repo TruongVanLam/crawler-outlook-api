@@ -70,7 +70,7 @@ def convert_emails_to_meta_receipts(batch_size: int = 1000):
                     
                     # Kiểm tra xem có text "failed" trong body không
                     body_text = (body_html + " " + body_preview).lower()
-                    if "failed" in body_text:
+                    if "failed" in body_text or "đạt đến ngưỡng" in body_text:
                         status = 'Fail'
                     else:
                         # Kiểm tra xem transaction_id đã tồn tại trong database chưa
@@ -211,7 +211,7 @@ def convert_specific_account_emails(account_id: int, batch_size: int = 1000):
                     
                     # Kiểm tra xem có text "failed" trong body không
                     body_text = (body_html + " " + body_preview).lower()
-                    if "failed" in body_text:
+                    if "failed" in body_text or "đạt đến ngưỡng" in body_text:
                         status = 'Fail'
                     else:
                         # Kiểm tra xem transaction_id đã tồn tại trong database chưa

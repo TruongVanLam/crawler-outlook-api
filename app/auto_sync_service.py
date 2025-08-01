@@ -11,6 +11,7 @@ from sqlalchemy import and_
 
 from .services import EmailSyncService
 from .meta_receipt_service import MetaReceiptService
+from .auth import refresh_access_token
 from database import get_db
 from models import Account, AuthToken
 
@@ -77,19 +78,29 @@ class AutoSyncService:
                         self.new_accounts.discard(account_id)
                         continue
                     
-                    # Check if account has valid auth token
+                    # Check if account has valid auth token and refresh if needed
                     auth_token = db.query(AuthToken).filter(
                         and_(
                             AuthToken.account_id == account_id,
-                            AuthToken.is_active == True,
-                            AuthToken.expires_at > datetime.utcnow()
+                            AuthToken.is_active == True
                         )
                     ).first()
                     
                     if not auth_token:
-                        print(f"Account {account_id} has no valid auth token")
+                        print(f"Account {account_id} has no auth token")
                         self.new_accounts.discard(account_id)
                         continue
+                    
+                    # Check if token is expired and refresh if needed
+                    if auth_token.expires_at <= datetime.utcnow():
+                        print(f"🔄 Token expired for account {account_id}, refreshing...")
+                        try:
+                            refresh_access_token(db, account_id)
+                            print(f"✅ Token refreshed for account {account_id}")
+                        except Exception as e:
+                            print(f"❌ Failed to refresh token for account {account_id}: {str(e)}")
+                            self.new_accounts.discard(account_id)
+                            continue
                     
                     # Perform initial monthly sync
                     sync_service = EmailSyncService(db, account_id)
@@ -131,12 +142,11 @@ class AutoSyncService:
         """Process daily sync for all active accounts (runs once per day)"""
         db = next(get_db())
         try:
-            # Get all active accounts with valid tokens
+            # Get all active accounts with tokens (we'll refresh expired ones)
             active_accounts = db.query(Account).join(AuthToken).filter(
                 and_(
                     Account.is_active == True,
-                    AuthToken.is_active == True,
-                    AuthToken.expires_at > datetime.utcnow()
+                    AuthToken.is_active == True
                 )
             ).all()
             
@@ -155,6 +165,23 @@ class AutoSyncService:
                         continue
                     
                     print(f"📧 Processing daily sync for account {account.id} ({account.email})")
+                    
+                    # Check if token is expired and refresh if needed
+                    auth_token = db.query(AuthToken).filter(
+                        and_(
+                            AuthToken.account_id == account.id,
+                            AuthToken.is_active == True
+                        )
+                    ).first()
+                    
+                    if auth_token and auth_token.expires_at <= datetime.utcnow():
+                        print(f"🔄 Token expired for account {account.id}, refreshing...")
+                        try:
+                            refresh_access_token(db, account.id)
+                            print(f"✅ Token refreshed for account {account.id}")
+                        except Exception as e:
+                            print(f"❌ Failed to refresh token for account {account.id}: {str(e)}")
+                            continue
                     
                     # Perform daily sync with max 999 emails
                     sync_service = EmailSyncService(db, account.id)
