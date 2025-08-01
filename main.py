@@ -67,33 +67,6 @@ def root():
     })
 
 
-# @app.post("/init-db")
-# def init_database():
-#     """
-#     Khởi tạo database và tạo các bảng
-#     """
-#     try:
-#         # Test kết nối database trước
-#         with engine.connect() as connection:
-#             result = connection.execute("SELECT 1")
-        
-#         # Tạo bảng
-#         create_tables()
-        
-#         # Kiểm tra bảng đã được tạo
-#         with engine.connect() as connection:
-#             result = connection.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
-#             tables = [row[0] for row in result]
-        
-#         return JSONResponse({
-#             "message": "Database initialized successfully",
-#             "tables_created": tables,
-#             "total_tables": len(tables)
-#         })
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=f"Failed to initialize database: {str(e)}")
-
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000) 
