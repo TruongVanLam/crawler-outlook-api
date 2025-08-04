@@ -208,10 +208,10 @@ def convert_specific_account_emails(account_id: int, batch_size: int = 1000):
                     meta_info = extract_meta_receipt_info_combined(body_html, body_preview)
                     
                     transaction_id = meta_info.get('transaction_id')
-                    
+                    reference_number = meta_info.get('reference_number')
                     # Kiểm tra xem có text "failed" trong body không
                     body_text = (body_html + " " + body_preview).lower()
-                    if "failed" in body_text or "đạt đến ngưỡng" in body_text:
+                    if "failed" in body_text or "đạt đến ngưỡng" in body_text or transaction_id == '' or reference_number == '' :
                         status = 'Fail'
                     else:
                         # Kiểm tra xem transaction_id đã tồn tại trong database chưa
