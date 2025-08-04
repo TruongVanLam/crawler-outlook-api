@@ -136,11 +136,12 @@ def delete_account_for_user(db: Session, user_id: int, account_id: int):
     return True
 
 # Account CRUD operations
-def create_account(db: Session, email: str, name: str = None, user_info: dict = None):
+def create_account(db: Session, email: str, name: str = None, user_info: dict = None, user_id: int = None):
     """Tạo tài khoản mới"""
     db_account = Account(
         email=email,
         name=name,
+        user_id=user_id,
         user_principal_name=user_info.get("userPrincipalName") if user_info else None,
         display_name=user_info.get("displayName") if user_info else None,
         given_name=user_info.get("givenName") if user_info else None,
@@ -379,12 +380,12 @@ def get_email_attachments(db: Session, email_id: int):
     return db.query(EmailAttachment).filter(EmailAttachment.email_id == email_id).all()
 
 # Utility functions
-def save_user_and_token_to_db(db: Session, email: str, name: str, access_token: str, refresh_token: str, expires_in: int, user_info: dict = None):
+def save_user_and_token_to_db(db: Session, email: str, name: str, access_token: str, refresh_token: str, expires_in: int, user_info: dict = None, user_id: int = None):
     """Lưu user và token vào database"""
     # Tạo hoặc cập nhật account
     account = get_account_by_email(db, email)
     if not account:
-        account = create_account(db, email, name, user_info)
+        account = create_account(db, email, name, user_info, user_id)
     
     # Tạo hoặc cập nhật token
     auth_token = create_auth_token(db, account.id, access_token, refresh_token, expires_in)

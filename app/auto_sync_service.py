@@ -110,7 +110,7 @@ class AutoSyncService:
                     
                     # Process meta receipts
                     meta_service = MetaReceiptService(db)
-                    meta_result = meta_service.process_account(account_id)
+                    meta_result = meta_service.process_account_emails(account_id)
                     
                     print(f"Meta receipts processed for account {account_id}: {meta_result['processed_count']} receipts")
                     
@@ -195,7 +195,7 @@ class AutoSyncService:
                         
                         # Process new meta receipts
                         meta_service = MetaReceiptService(db)
-                        meta_result = meta_service.process_account(account.id)
+                        meta_result = meta_service.process_account_emails(account.id)
                         
                         receipts_processed = meta_result['processed_count']
                         total_receipts_processed += receipts_processed

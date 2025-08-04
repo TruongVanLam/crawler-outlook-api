@@ -62,7 +62,7 @@ def test_manual_daily_sync():
                 if emails_synced > 0:
                     # Xử lý meta receipts cho emails mới
                     meta_service = MetaReceiptService(db)
-                    meta_result = meta_service.process_account(account.id)
+                    meta_result = meta_service.process_account_emails(account.id)
                     
                     receipts_processed = meta_result['processed_count']
                     total_receipts_processed += receipts_processed

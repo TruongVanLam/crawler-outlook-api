@@ -273,29 +273,38 @@ def delete_user_account(
 
 
 @router.get("/login")
-def login():
+def login(user_id: Optional[int] = None):
     """
     Tạo URL để user đăng nhập Microsoft
     """
     from urllib.parse import urlencode
+    
+    # Tạo state parameter để lưu user_id nếu có
+    state_param = ""
+    if user_id:
+        state_param = f"user_id={user_id}"
     
     query_params = urlencode({
         "client_id": CLIENT_ID,
         "response_type": "code",
         "redirect_uri": REDIRECT_URI,
         "response_mode": "query",
-        "scope": "offline_access Mail.Read User.Read"
+        "scope": "offline_access Mail.Read User.Read",
+        "state": state_param
     })
     auth_url = f"https://login.microsoftonline.com/common/oauth2/v2.0/authorize?{query_params}"
     
     return JSONResponse({
         "login_url": auth_url,
-        "message": "Truy cập URL này để đăng nhập Microsoft"
+        "message": "Truy cập URL này để đăng nhập Microsoft",
+        "user_id": user_id
     })
 
 
+
+
 @router.get("/auth/callback")
-def callback(code: str, db: Session = Depends(get_db)):
+def callback(code: str, state: Optional[str] = None, db: Session = Depends(get_db)):
     """
     Callback sau khi user đăng nhập Microsoft
     """
@@ -325,15 +334,26 @@ def callback(code: str, db: Session = Depends(get_db)):
     email = me["userPrincipalName"]
     name = me.get("displayName", "")
 
+    # Extract user_id from state parameter if available
+    user_id = None
+    if state and state.startswith("user_id="):
+        try:
+            user_id = int(state.split("=")[1])
+        except (ValueError, IndexError):
+            # Invalid state parameter, continue without user_id
+            pass
+
     # Lưu vào database
     account, auth_token = save_user_and_token_to_db(
-        db, email, name, access_token, refresh_token, expires_in, me
+        db, email, name, access_token, refresh_token, expires_in, me, user_id=user_id
     )
     
     # Add to auto sync queue
     auto_sync_service.add_new_account(account.id)
     
-    return {"message": "Thêm tài khoản thành công!", "email": email, "account_id": account.id}
+    return {"message": "Thêm tài khoản thành công!", "email": email, "account_id": account.id, "user_id": user_id}
+
+
 
 
 @router.get("/mails")
