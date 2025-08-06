@@ -554,7 +554,6 @@ def sync_emails(
 @router.get("/mails/sync-monthly/")
 def sync_monthly_emails(
     account_ids: str,  # Comma-separated list of account IDs
-    convert_to_meta_receipts: bool = True,  # Có chạy convert emails sang meta receipts không
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
@@ -612,6 +611,7 @@ def sync_monthly_emails(
                 })
         
         # Convert emails sang meta receipts nếu được yêu cầu
+        convert_to_meta_receipts = True
         if convert_to_meta_receipts:
             print("🔄 Bắt đầu convert emails sang meta receipts...")
             
