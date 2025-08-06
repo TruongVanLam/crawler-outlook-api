@@ -553,21 +553,107 @@ def sync_emails(
 
 @router.get("/mails/sync-monthly/")
 def sync_monthly_emails(
-    account_id: int,
+    account_ids: str,  # Comma-separated list of account IDs
+    convert_to_meta_receipts: bool = True,  # Có chạy convert emails sang meta receipts không
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """
-    Đồng bộ email trong 1 tháng gần nhất
+    Đồng bộ email trong 1 tháng gần nhất cho nhiều accounts và convert sang meta receipts
     """
     try:
-        service = EmailSyncService(db, account_id)
-        result = service.sync_monthly_emails()
+        # Parse account_ids từ string thành list
+        account_id_list = [int(id.strip()) for id in account_ids.split(',') if id.strip()]
+        
+        if not account_id_list:
+            raise HTTPException(status_code=400, detail="account_ids không được để trống")
+        
+        # Kiểm tra quyền truy cập accounts
+        user_accounts = get_accounts_by_user(db, current_user.id)
+        user_account_ids = [acc.id for acc in user_accounts]
+        
+        # Kiểm tra xem tất cả account_ids có thuộc về user không
+        unauthorized_accounts = [acc_id for acc_id in account_id_list if acc_id not in user_account_ids]
+        if unauthorized_accounts:
+            raise HTTPException(
+                status_code=403, 
+                detail=f"Không có quyền truy cập accounts: {unauthorized_accounts}"
+            )
+        
+        # Kết quả tổng hợp
+        total_synced = 0
+        total_days_processed = 0
+        sync_results = []
+        convert_results = []
+        
+        # Sync emails cho từng account
+        for account_id in account_id_list:
+            try:
+                service = EmailSyncService(db, account_id)
+                result = service.sync_monthly_emails()
+                
+                total_synced += result["total_synced"]
+                total_days_processed += result["days_processed"]
+                
+                sync_results.append({
+                    "account_id": account_id,
+                    "total_synced": result["total_synced"],
+                    "days_processed": result["days_processed"],
+                    "details": result["details"]
+                })
+                
+                print(f"✅ Đã sync {result['total_synced']} emails cho account {account_id}")
+                
+            except Exception as e:
+                print(f"❌ Lỗi khi sync account {account_id}: {e}")
+                sync_results.append({
+                    "account_id": account_id,
+                    "error": str(e)
+                })
+        
+        # Convert emails sang meta receipts nếu được yêu cầu
+        if convert_to_meta_receipts:
+            print("🔄 Bắt đầu convert emails sang meta receipts...")
+            
+            # Import function từ convert_emails_to_meta_receipts.py
+            import sys
+            import os
+            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+            
+            from convert_emails_to_meta_receipts import convert_specific_account_emails
+            
+            for account_id in account_id_list:
+                try:
+                    convert_result = convert_specific_account_emails(account_id)
+                    if convert_result:
+                        convert_results.append({
+                            "account_id": account_id,
+                            "processed_count": convert_result["processed_count"],
+                            "created_count": convert_result["created_count"],
+                            "skipped_count": convert_result["skipped_count"],
+                            "error_count": convert_result["error_count"]
+                        })
+                        print(f"✅ Đã convert {convert_result['created_count']} meta receipts cho account {account_id}")
+                    else:
+                        convert_results.append({
+                            "account_id": account_id,
+                            "error": "Convert thất bại"
+                        })
+                        
+                except Exception as e:
+                    print(f"❌ Lỗi khi convert account {account_id}: {e}")
+                    convert_results.append({
+                        "account_id": account_id,
+                        "error": str(e)
+                    })
         
         return JSONResponse({
-            "message": f"Đồng bộ thành công {result['total_synced']} email trong {result['days_processed']} ngày",
-            "total_synced": result["total_synced"],
-            "days_processed": result["days_processed"],
-            "details": result["details"]
+            "message": f"Đồng bộ thành công {total_synced} email trong {total_days_processed} ngày cho {len(account_id_list)} accounts",
+            "total_synced": total_synced,
+            "total_days_processed": total_days_processed,
+            "accounts_processed": len(account_id_list),
+            "sync_results": sync_results,
+            "convert_results": convert_results if convert_to_meta_receipts else None
         })
         
     except Exception as e:
