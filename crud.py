@@ -386,6 +386,34 @@ def save_user_and_token_to_db(db: Session, email: str, name: str, access_token: 
     account = get_account_by_email(db, email)
     if not account:
         account = create_account(db, email, name, user_info, user_id)
+    elif not account.is_active:
+        # Nếu account đã tồn tại nhưng bị vô hiệu hóa, kích hoạt lại
+        account.is_active = True
+        account.updated_at = datetime.utcnow()
+        # Cập nhật thông tin mới nếu có
+        if name:
+            account.name = name
+        if user_id:
+            account.user_id = user_id
+        if user_info:
+            # Cập nhật các thông tin từ user_info
+            if user_info.get('userPrincipalName'):
+                account.user_principal_name = user_info.get('userPrincipalName')
+            if user_info.get('displayName'):
+                account.display_name = user_info.get('displayName')
+            if user_info.get('givenName'):
+                account.given_name = user_info.get('givenName')
+            if user_info.get('surname'):
+                account.surname = user_info.get('surname')
+            if user_info.get('jobTitle'):
+                account.job_title = user_info.get('jobTitle')
+            if user_info.get('officeLocation'):
+                account.office_location = user_info.get('officeLocation')
+            if user_info.get('mobilePhone'):
+                account.mobile_phone = user_info.get('mobilePhone')
+            if user_info.get('businessPhones'):
+                account.business_phones = user_info.get('businessPhones')
+        db.commit()
     
     # Tạo hoặc cập nhật token
     auth_token = create_auth_token(db, account.id, access_token, refresh_token, expires_in)
